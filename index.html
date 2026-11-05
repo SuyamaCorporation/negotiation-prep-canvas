@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>交渉前準備キャンバス</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  *:focus-visible { outline: 2px solid #8b5cf6; outline-offset: 2px; }
+  .fade-in { animation: fadeIn 0.3s ease; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .dot-cell { cursor: pointer; transition: background 0.15s; }
+</style>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen">
+<div class="max-w-2xl mx-auto px-4 py-8">
+  <h1 class="text-2xl font-bold text-violet-400 mb-1">交渉前準備キャンバス</h1>
+  <p class="text-gray-400 text-sm mb-4">BATNA・ZOPA・優先度マトリクス・ポジション設定で交渉スクリプトを生成</p>
+
+  <div class="mb-4">
+    <div class="flex gap-2 items-center">
+      <select id="caseSelect" class="bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white text-sm flex-1 focus:border-violet-500">
+        <option value="__new__">＋ 新規案件</option>
+      </select>
+      <button id="deleteCaseBtn" class="bg-gray-700 hover:bg-gray-600 text-white px-3 py-2 rounded-lg text-sm transition">削除</button>
+    </div>
+  </div>
+
+  <div class="mb-4">
+    <input id="caseNameInput" type="text" placeholder="案件名（例: 2026年度サプライヤー契約交渉）"
+      class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white focus:border-violet-500">
+  </div>
+
+  <div class="flex gap-2 mb-6 overflow-x-auto pb-1">
+    <button data-step="1" class="step-tab whitespace-nowrap px-4 py-2 rounded-lg text-sm font-medium bg-violet-700 text-white">Step 1: BATNA</button>
+    <button data-step="2" class="step-tab whitespace-nowrap px-4 py-2 rounded-lg text-sm font-medium bg-gray-800 text-gray-400">Step 2: ZOPA</button>
+    <button data-step="3" class="step-tab whitespace-nowrap px-4 py-2 rounded-lg text-sm font-medium bg-gray-800 text-gray-400">Step 3: 優先度</button>
+    <button data-step="4" class="step-tab whitespace-nowrap px-4 py-2 rounded-lg text-sm font-medium bg-gray-800 text-gray-400">Step 4: ポジション</button>
+  </div>
+
+  <div id="stepContent"></div>
+  <div id="scriptOutput" class="mt-6 hidden"></div>
+</div>
+
+<script>
+(function(){
+  function htmlEscape(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  let cases = {};
+  let currentCaseId = null;
+  let currentStep = 1;
+
+  function loadCases() {
+    try { cases = JSON.parse(localStorage.getItem('nego_cases_v1') || '{}'); } catch(e) { cases = {}; }
+  }
+  function saveCases() { localStorage.setItem('nego_cases_v1', JSON.stringify(cases)); }
+
+  function newCase() {
+    return {
+      name: '',
+      batna_self: '', batna_other: '',
+      zopa_self_min: 30, zopa_self_max: 70, zopa_other_min: 20, zopa_other_max: 60,
+      matrix: {},
+      open: '', target: '', bottom: '',
+      date: new Date().toLocaleDateString('ja-JP')
+    };
+  }
+
+  function populateCaseSelect() {
+    const sel = document.getElementById('caseSelect');
+    const prevVal = sel.value;
+    sel.innerHTML = '<option value="__new__">＋ 新規案件</option>';
+    Object.keys(cases).forEach(id => {
+      const opt = document.createElement('option');
+      opt.value = id;
+      opt.textContent = cases[id].name || `案件 ${id.slice(-4)}`;
+      sel.appendChild(opt);
+    });
+    if (prevVal && cases[prevVal]) sel.value = prevVal;
+  }
+
+  function getCurrentCase() {
+    if (!currentCaseId || !cases[currentCaseId]) return newCase();
+    return cases[currentCaseId];
+  }
+  function saveCurrentCase() {
+    if (!currentCaseId) return;
+    cases[currentCaseId] = getCurrentCase();
+    saveCases();
+  }
+
+  function switchCase(id) {
+    if (id === '__new__') {
+      const nid = 'case_' + Date.now();
+      cases[nid] = newCase();
+      currentCaseId = nid;
+      saveCases();
+      populateCaseSelect();
+      document.getElementById('caseSelect').value = nid;
+    } else {
+      currentCaseId = id;
+    }
+    const c = getCurrentCase();
+    document.getElementById('caseNameInput').value = c.name || '';
+    renderStep(currentStep);
+    document.getElementById('scriptOutput').classList.add('hidden');
+  }
+
+  function renderStep(step) {
+    currentStep = step;
+    document.querySelectorAll('.step-tab').forEach(t => {
+      const active = parseInt(t.dataset.step) === step;
+      t.className = `step-tab whitespace-nowrap px-4 py-2 rounded-lg text-sm font-medium transition ${active ? 'bg-violet-700 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}`;
+    });
+    const c = getCurrentCase();
+    const el = document.getElementById('stepContent');
+
+    if (step === 1) {
+      el.innerHTML = `
+        <div class="fade-in bg-gray-900 rounded-xl p-5 space-y-4">
+          <h2 class="text-sm font-bold text-violet-400">Step 1 — BATNA（最良の代替案）</h2>
+          <div>
+            <label class="block text-sm text-gray-300 mb-1" for="batnaSelf">自分の BATNA（交渉決裂時の最良の選択肢）</label>
+            <textarea id="batnaSelf" rows="3" placeholder="例: 他のサプライヤーAと月額15万円で契約できる"
+              class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white resize-none focus:border-violet-500">${htmlEscape(c.batna_self)}</textarea>
+          </div>
+          <div>
+            <label class="block text-sm text-gray-300 mb-1" for="batnaOther">相手の BATNA 推測</label>
+            <textarea id="batnaOther" rows="3" placeholder="例: 相手は既存顧客を逃すと月売上10%減と推測"
+              class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white resize-none focus:border-violet-500">${htmlEscape(c.batna_other)}</textarea>
+          </div>
+          <button class="next-step-btn bg-violet-600 hover:bg-violet-500 text-white px-5 py-2 rounded-lg text-sm font-medium transition" data-next="2">次のステップへ →</button>
+        </div>`;
+    } else if (step === 2) {
+      el.innerHTML = `
+        <div class="fade-in bg-gray-900 rounded-xl p-5 space-y-4">
+          <h2 class="text-sm font-bold text-violet-400">Step 2 — ZOPA（合意可能ゾーン）可視化</h2>
+          <p class="text-xs text-gray-400">価格・条件などを0〜100のスケールで設定してください</p>
+          <div>
+            <label class="block text-xs text-gray-400 mb-2">自分の許容レンジ（下限〜上限）</label>
+            <div class="flex gap-3 items-center">
+              <input id="selfMin" type="number" min="0" max="100" value="${c.zopa_self_min}"
+                class="bg-gray-800 border border-gray-700 rounded px-2 py-1 w-20 text-white text-sm focus:border-violet-500">
+              <span class="text-gray-500">〜</span>
+              <input id="selfMax" type="number" min="0" max="100" value="${c.zopa_self_max}"
+                class="bg-gray-800 border border-gray-700 rounded px-2 py-1 w-20 text-white text-sm focus:border-violet-500">
+            </div>
+          </div>
+          <div>
+            <label class="block text-xs text-gray-400 mb-2">相手の推測レンジ（下限〜上限）</label>
+            <div class="flex gap-3 items-center">
+              <input id="otherMin" type="number" min="0" max="100" value="${c.zopa_other_min}"
+                class="bg-gray-800 border border-gray-700 rounded px-2 py-1 w-20 text-white text-sm focus:border-violet-500">
+              <span class="text-gray-500">〜</span>
+              <input id="otherMax" type="number" min="0" max="100" value="${c.zopa_other_max}"
+                class="bg-gray-800 border border-gray-700 rounded px-2 py-1 w-20 text-white text-sm focus:border-violet-500">
+            </div>
+          </div>
+          <canvas id="zopaCanvas" width="500" height="80" class="w-full rounded" role="img" aria-label="ZOPAビジュアライゼーション"></canvas>
+          <div id="zopaMsg" class="text-sm"></div>
+          <button class="next-step-btn bg-violet-600 hover:bg-violet-500 text-white px-5 py-2 rounded-lg text-sm font-medium transition" data-next="3">次のステップへ →</button>
+        </div>`;
+      drawZopa();
+      ['selfMin','selfMax','otherMin','otherMax'].forEach(id => {
+        document.getElementById(id).addEventListener('input', drawZopa);
+      });
+    } else if (step === 3) {
+      el.innerHTML = `
+        <div class="fade-in bg-gray-900 rounded-xl p-5 space-y-4">
+          <h2 class="text-sm font-bold text-violet-400">Step 3 — 優先度マトリクス</h2>
+          <p class="text-xs text-gray-400">交渉条件ごとに「重要度」と「譲歩可能性」をクリックで設定</p>
+          <div id="matrixTable"></div>
+          <button class="next-step-btn bg-violet-600 hover:bg-violet-500 text-white px-5 py-2 rounded-lg text-sm font-medium transition" data-next="4">次のステップへ →</button>
+        </div>`;
+      renderMatrix();
+    } else if (step === 4) {
+      el.innerHTML = `
+        <div class="fade-in bg-gray-900 rounded-xl p-5 space-y-4">
+          <h2 class="text-sm font-bold text-violet-400">Step 4 — ポジション設定</h2>
+          <div>
+            <label class="block text-sm text-gray-300 mb-1" for="openPos">開始ポジション（提示する初期条件）</label>
+            <textarea id="openPos" rows="2" placeholder="例: 月額12万円・3年契約を提示"
+              class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white resize-none focus:border-violet-500">${htmlEscape(c.open)}</textarea>
+          </div>
+          <div>
+            <label class="block text-sm text-gray-300 mb-1" for="targetPos">ターゲット（理想の合意条件）</label>
+            <textarea id="targetPos" rows="2" placeholder="例: 月額13万円・2年契約"
+              class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white resize-none focus:border-violet-500">${htmlEscape(c.target)}</textarea>
+          </div>
+          <div>
+            <label class="block text-sm text-gray-300 mb-1" for="bottomPos">ボトムライン（これ以下は交渉決裂）</label>
+            <textarea id="bottomPos" rows="2" placeholder="例: 月額15万円超えたらBATNA発動"
+              class="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-white resize-none focus:border-violet-500">${htmlEscape(c.bottom)}</textarea>
+          </div>
+          <button id="generateBtn" class="bg-violet-600 hover:bg-violet-500 text-white px-5 py-2 rounded-lg text-sm font-medium transition">交渉スクリプトを生成 →</button>
+        </div>`;
+      document.getElementById('generateBtn').addEventListener('click', () => {
+        const c2 = getCurrentCase();
+        c2.open = document.getElementById('openPos').value;
+        c2.target = document.getElementById('targetPos').value;
+        c2.bottom = document.getElementById('bottomPos').value;
+        cases[currentCaseId] = c2;
+        saveCases();
+        generateScript();
+      });
+    }
+
+    el.querySelectorAll('.next-step-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        collectStepData(currentStep);
+        renderStep(parseInt(btn.dataset.next));
+      });
+    });
+  }
+
+  function collectStepData(step) {
+    const c = getCurrentCase();
+    if (step === 1) {
+      c.batna_self = document.getElementById('batnaSelf')?.value || c.batna_self;
+      c.batna_other = document.getElementById('batnaOther')?.value || c.batna_other;
+    } else if (step === 2) {
+      c.zopa_self_min = parseInt(document.getElementById('selfMin')?.value || c.zopa_self_min);
+      c.zopa_self_max = parseInt(document.getElementById('selfMax')?.value || c.zopa_self_max);
+      c.zopa_other_min = parseInt(document.getElementById('otherMin')?.value || c.zopa_other_min);
+      c.zopa_other_max = parseInt(document.getElementById('otherMax')?.value || c.zopa_other_max);
+    }
+    cases[currentCaseId] = c;
+    saveCases();
+  }
+
+  function drawZopa() {
+    const canvas = document.getElementById('zopaCanvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    const c = getCurrentCase();
+    const sm = parseInt(document.getElementById('selfMin')?.value ?? c.zopa_self_min);
+    const sx = parseInt(document.getElementById('selfMax')?.value ?? c.zopa_self_max);
+    const om = parseInt(document.getElementById('otherMin')?.value ?? c.zopa_other_min);
+    const ox = parseInt(document.getElementById('otherMax')?.value ?? c.zopa_other_max);
+    const pad = 20;
+    const scale = (W - pad * 2) / 100;
+
+    // Self bar
+    ctx.fillStyle = '#6d28d9';
+    ctx.fillRect(pad + sm * scale, 10, (sx - sm) * scale, 25);
+    ctx.fillStyle = '#a78bfa';
+    ctx.font = '11px sans-serif';
+    ctx.fillText('自分', pad, 8);
+
+    // Other bar
+    ctx.fillStyle = '#374151';
+    ctx.fillRect(pad + om * scale, 44, (ox - om) * scale, 25);
+    ctx.fillStyle = '#9ca3af';
+    ctx.fillText('相手(推測)', pad, 42);
+
+    // ZOPA overlap
+    const zopaMin = Math.max(sm, om), zopaMax = Math.min(sx, ox);
+    const msgEl = document.getElementById('zopaMsg');
+    if (zopaMax > zopaMin) {
+      ctx.fillStyle = 'rgba(16,185,129,0.4)';
+      ctx.fillRect(pad + zopaMin * scale, 10, (zopaMax - zopaMin) * scale, 59);
+      msgEl.innerHTML = `<span class="text-emerald-400 font-medium">ZOPA: ${zopaMin}〜${zopaMax} ✓ 合意可能ゾーンあり</span>`;
+    } else {
+      msgEl.innerHTML = `<span class="text-red-400 font-medium">⚠ ZOPA なし — レンジが重ならないため合意困難</span>`;
+    }
+    // axis
+    ctx.fillStyle = '#6b7280';
+    ctx.font = '10px sans-serif';
+    [0,25,50,75,100].forEach(v => {
+      ctx.fillText(v, pad + v * scale - 4, 78);
+    });
+  }
+
+  const CONDITIONS = ['価格','支払いサイト','数量','納期','保証期間'];
+  function renderMatrix() {
+    const c = getCurrentCase();
+    const el = document.getElementById('matrixTable');
+    const levels = ['低','中','高'];
+    let html = `<table class="w-full text-xs border-collapse">
+      <thead><tr>
+        <th class="text-left text-gray-400 pb-2 w-32">条件</th>
+        <th class="text-center text-gray-400 pb-2">重要度</th>
+        <th class="text-center text-gray-400 pb-2">譲歩可能性</th>
+      </tr></thead><tbody>`;
+    CONDITIONS.forEach(cond => {
+      const m = c.matrix[cond] || { imp: 1, flex: 1 };
+      html += `<tr class="border-t border-gray-800">
+        <td class="py-2 text-gray-300">${htmlEscape(cond)}</td>
+        <td class="py-2 text-center">
+          <div class="flex gap-1 justify-center" role="group" aria-label="${htmlEscape(cond)}重要度">
+            ${levels.map((l,i) => `<button class="dot-cell px-2 py-1 rounded text-xs ${m.imp === i ? 'bg-violet-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}" data-cond="${htmlEscape(cond)}" data-field="imp" data-val="${i}">${l}</button>`).join('')}
+          </div>
+        </td>
+        <td class="py-2 text-center">
+          <div class="flex gap-1 justify-center" role="group" aria-label="${htmlEscape(cond)}譲歩可能性">
+            ${levels.map((l,i) => `<button class="dot-cell px-2 py-1 rounded text-xs ${m.flex === i ? 'bg-orange-600 text-white' : 'bg-gray-800 text-gray-400 hover:bg-gray-700'}" data-cond="${htmlEscape(cond)}" data-field="flex" data-val="${i}">${l}</button>`).join('')}
+          </div>
+        </td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+    el.innerHTML = html;
+    el.querySelectorAll('.dot-cell').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const cond = btn.dataset.cond;
+        const field = btn.dataset.field;
+        const val = parseInt(btn.dataset.val);
+        const c2 = getCurrentCase();
+        if (!c2.matrix[cond]) c2.matrix[cond] = { imp: 1, flex: 1 };
+        c2.matrix[cond][field] = val;
+        cases[currentCaseId] = c2;
+        saveCases();
+        renderMatrix();
+      });
+    });
+  }
+
+  function generateScript() {
+    const c = getCurrentCase();
+    const levels = ['低','中','高'];
+    const matrixLines = CONDITIONS.map(cond => {
+      const m = c.matrix[cond] || { imp: 1, flex: 1 };
+      return `  - ${cond}: 重要度=${levels[m.imp]} / 譲歩可能性=${levels[m.flex]}`;
+    }).join('\n');
+    const script = `# 交渉スクリプトたたき台
+
+## 案件: ${c.name || '（無題）'}
+
+### 1. 自分の BATNA
+${c.batna_self || '未入力'}
+
+### 2. 相手の BATNA 推測
+${c.batna_other || '未入力'}
+
+### 3. ZOPA
+- 自分のレンジ: ${c.zopa_self_min} 〜 ${c.zopa_self_max}
+- 相手推測レンジ: ${c.zopa_other_min} 〜 ${c.zopa_other_max}
+
+### 4. 優先度マトリクス
+${matrixLines}
+
+### 5. ポジション設定
+- 開始ポジション: ${c.open || '未設定'}
+- ターゲット: ${c.target || '未設定'}
+- ボトムライン: ${c.bottom || '未設定'}
+
+### 6. 推奨スクリプト
+1. 開幕: 「${c.open || '開始ポジションを設定してください'}」から交渉を始める
+2. 相手の反応を聞いてZOPA内に誘導する
+3. 重要度「高」の条件は絶対に譲らず、譲歩可能性「高」の条件で合意形成を促進する
+4. 相手がボトムラインを越える要求をした場合は「${c.batna_self || 'BATNAを発動'}」を活用する
+`;
+
+    const el = document.getElementById('scriptOutput');
+    el.className = 'fade-in bg-gray-900 rounded-xl p-5 border border-violet-800';
+    el.innerHTML = `
+      <h2 class="text-sm font-bold text-violet-400 mb-3">生成された交渉スクリプト</h2>
+      <pre class="text-xs text-gray-300 whitespace-pre-wrap font-mono bg-gray-950 rounded p-3 overflow-x-auto">${htmlEscape(script)}</pre>
+      <button id="copyScriptBtn" class="mt-3 bg-violet-600 hover:bg-violet-500 text-white px-4 py-2 rounded-lg text-sm transition">クリップボードにコピー</button>
+    `;
+    el.classList.remove('hidden');
+    document.getElementById('copyScriptBtn').addEventListener('click', () => {
+      navigator.clipboard.writeText(script).then(() => {
+        document.getElementById('copyScriptBtn').textContent = 'コピーしました！';
+        setTimeout(() => { document.getElementById('copyScriptBtn').textContent = 'クリップボードにコピー'; }, 2000);
+      });
+    });
+  }
+
+  document.getElementById('caseSelect').addEventListener('change', e => switchCase(e.target.value));
+  document.getElementById('deleteCaseBtn').addEventListener('click', () => {
+    if (!currentCaseId || !cases[currentCaseId]) return;
+    if (!confirm('この案件を削除しますか？')) return;
+    delete cases[currentCaseId];
+    saveCases();
+    currentCaseId = null;
+    populateCaseSelect();
+    document.getElementById('caseSelect').value = '__new__';
+    document.getElementById('caseNameInput').value = '';
+    document.getElementById('stepContent').innerHTML = '';
+    document.getElementById('scriptOutput').classList.add('hidden');
+  });
+  document.getElementById('caseNameInput').addEventListener('input', e => {
+    if (!currentCaseId) return;
+    cases[currentCaseId].name = e.target.value;
+    saveCases();
+    populateCaseSelect();
+  });
+  document.querySelectorAll('.step-tab').forEach(t => {
+    t.addEventListener('click', () => {
+      if (!currentCaseId) { alert('まず案件を作成してください'); return; }
+      collectStepData(currentStep);
+      renderStep(parseInt(t.dataset.step));
+    });
+  });
+
+  loadCases();
+  populateCaseSelect();
+  // Auto-select first case if exists
+  const keys = Object.keys(cases);
+  if (keys.length > 0) {
+    currentCaseId = keys[0];
+    document.getElementById('caseSelect').value = currentCaseId;
+    document.getElementById('caseNameInput').value = cases[currentCaseId].name || '';
+    renderStep(1);
+  }
+})();
+</script>
+</body>
+</html>
